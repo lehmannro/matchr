@@ -92,7 +92,8 @@ def gen(sre_pattern, max_repeat=sre.MAXREPEAT):
             none, branches = args
             yield map(_gen, branches)
         elif opcode == sre.ANY:
-            yield map(chr, xrange(256))
+            yield map(chr, itertools.ifilter(lambda x:x not in (13, 10),
+                xrange(256)))
         else:
             raise NotImplementedError("%s in %r" % (opcode, sre_pattern))
 
