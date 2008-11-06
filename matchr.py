@@ -7,7 +7,6 @@ import itertools
 import functools
 import sre_constants as sre
 import sre_parse
-import types
 
 EMPTY = ''
 
