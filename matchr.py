@@ -7,8 +7,20 @@ import itertools
 import functools
 import sre_constants as sre
 import sre_parse
+import string
 
 EMPTY = ''
+ALL = set(itertools.imap(chr, itertools.ifilter(
+    lambda x:x not in (10, 13), xrange(256))))
+CATEGORIES = {
+    sre.CATEGORY_DIGIT: string.digits,
+    sre.CATEGORY_SPACE: string.whitespace,
+    sre.CATEGORY_WORD: string.ascii_letters,
+
+    sre.CATEGORY_NOT_DIGIT: sorted(ALL - set(string.digits)),
+    sre.CATEGORY_NOT_SPACE: sorted(ALL - set(string.whitespace)),
+    sre.CATEGORY_NOT_WORD: sorted(ALL - set(string.ascii_letters)),
+}
 
 # public interface
 def generate(pattern, max_repeat, flags=0):
@@ -96,9 +108,9 @@ def gen(sre_pattern, max_repeat=sre.MAXREPEAT):
                 xrange(256)))
         elif opcode == sre.CATEGORY:
             cat = args
-            if cat == sre.CATEGORY_DIGIT:
-                for c in xrange(10):
-                    yield str(c)
+            if cat in CATEGORIES:
+                for c in CATEGORIES[cat]:
+                    yield c
             else:
                 raise NotImplementedError("%s in %s" %
                     (cat, ", ".join(map(repr, sre_pattern))))
