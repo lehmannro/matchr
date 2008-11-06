@@ -74,7 +74,7 @@ def gen(sre_pattern, max_repeat=sre.MAXREPEAT):
             for char in xrange(low, high + 1):
                 yield chr(char)
         elif opcode == sre.IN:
-            yield gen(args)
+            yield _gen(args)
         elif opcode == sre.MAX_REPEAT: # A{l,h}
             low, high, pat = args
             high = min(max_repeat, high)
@@ -94,8 +94,17 @@ def gen(sre_pattern, max_repeat=sre.MAXREPEAT):
         elif opcode == sre.ANY:
             yield map(chr, itertools.ifilter(lambda x:x not in (13, 10),
                 xrange(256)))
+        elif opcode == sre.CATEGORY:
+            cat = args
+            if cat == sre.CATEGORY_DIGIT:
+                for c in xrange(10):
+                    yield str(c)
+            else:
+                raise NotImplementedError("%s in %s" %
+                    (cat, ", ".join(map(repr, sre_pattern))))
         else:
-            raise NotImplementedError("%s in %r" % (opcode, sre_pattern))
+            raise NotImplementedError("%s in %s" %
+                (opcode, ", ".join(map(repr, sre_pattern))))
 
 if __name__ == '__main__':
     import optparse
