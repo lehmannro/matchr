@@ -9,10 +9,158 @@ import sre_constants as sre
 import sre_parse
 import string
 
+
+# public interface
+def generate(pattern, max_repeat=sre.MAXREPEAT, flags=0):
+    """A convenient interface to the match combinator.
+    
+    It parses a pattern (using `sre_parse.parse`), folds out all meta
+    characters into a match tree (cf. `_generate`) and combines all regular
+    subexpressions in order to obtain all possible matches (cf. `_combine`).
+
+    It strips away all duplicates, as the pattern ``a?a?`` would yield ``''``,
+    ``'a'``, ``'a'``, and ``'aa'`` otherwise.
+
+    """
+    # applying `set` right now would remove order
+    matches = _combine(
+        sre_parse.parse(pattern, flags=flags),
+        max_repeat=max_repeat,
+    )
+    had = set()
+    for match in matches:
+        if match not in had:
+            had.add(match)
+            yield match
+
+# itertools
+try:
+    from itertools import product
+except ImportError:
+    def product(*sets):
+        """Cartesion product of input iterables by Steven Taschuk."""
+        # http://code.activestate.com/recipes/159975/#c2
+        wheels = map(iter, sets) # wheels like in an odometer
+        digits = [it.next() for it in wheels]
+        digits_n = len(digits)
+        while True:
+            yield digits[:]
+            for i in xrange(digits_n-1, -1, -1):
+                try:
+                    digits[i] = wheels[i].next()
+                    break
+                except StopIteration:
+                    wheels[i] = iter(sets[i])
+                    digits[i] = wheels[i].next()
+            else:
+                break
+
+def unpack(it):
+    result = []
+    for item in it:
+        if isinstance(item, basestring):
+            result.append(item)
+        else:
+            result.append(unpack(item))
+    return result
+
+# match generator
+def _combine(sre_pattern, max_repeat):
+    """Combine all matches from an SRE parsed pattern.
+
+    Generate match sets first (cf. `_generate`) and apply the cartesian
+    product to all sets.
+
+    """
+    return map(''.join,
+        product(*unpack(_generate(sre_pattern, max_repeat=max_repeat))))
+    # possible optimization: do not unpack but tee iterators
+    # irrelevant at the moment since `product` is the biggest bottleneck
+
+def _generate(sre_pattern, max_repeat):
+    """Generate a sequence of match sets from an SRE parsed pattern.
+
+    >>> g = functools.partial(_generate, max_repeat=3)
+    >>> unpack(g([ # a*
+    ...    ('max_repeat', (0, 65535, [
+    ...      ('literal', 97),
+           ])),
+    ... ]))
+    [['', 'a'], ['', 'a'], ['', 'a']]
+    >>> unpack(g([ # (a|c)+
+    ...    ('max_repeat', (1, 65535, [
+    ...      ('subpattern', (1, [
+    ...        ('in', [
+    ...          ('literal', 97),
+    ...          ('literal', 99),
+    ...        ]),
+    ...      ])),
+    ...    ])),
+    ... ]))
+    [['a', 'c'], ['', 'a', 'c'], ['', 'a', 'c']]
+
+    """
+    g = functools.partial(_generate, max_repeat=max_repeat) # nested recursion
+    c = functools.partial(_combine, max_repeat=max_repeat) # flat recursion
+
+    for opcode, args in sre_pattern:
+
+        if opcode == sre.SUBPATTERN:
+            ref, pat = args
+            yield c(pat)
+
+        elif opcode == sre.BRANCH:
+            none, branches = args
+            yield itertools.chain(*map(c, branches))
+
+        elif opcode == sre.LITERAL:
+            yield chr(args)
+        elif opcode == sre.NOT_LITERAL:
+            yield sorted(ALL - set(chr(args)))
+
+        elif opcode == sre.ANY:
+            yield sorted(ALL)
+
+        elif opcode == sre.RANGE:
+            low, high = args
+            yield itertools.imap(chr, xrange(low, high + 1))
+
+        elif opcode == sre.IN:
+            if args[0][0] == sre.NEGATE:
+                args.pop(0)
+                print args
+                yield sorted(ALL - set(itertools.chain(*g(args))))
+            else:
+                yield itertools.chain(*g(args))
+
+        elif opcode in (sre.MAX_REPEAT, sre.MIN_REPEAT):
+            low, high, pat = args
+            high = min(max_repeat, high)
+            matches = c(pat)
+            for i in xrange(low):
+                yield matches
+            for i in xrange(high - low):
+                yield itertools.chain([EMPTY], matches)
+
+        elif opcode == sre.CATEGORY:
+            cat = args
+            if cat in CATEGORIES:
+                for char in CATEGORIES[cat]:
+                    yield char
+            else:
+                raise NotImplementedError("category %s" % cat)
+
+        else:
+            if isinstance(args, basestring):
+                args = "(%s,)" % args
+            raise NotImplementedError("opcode %s %s" % (opcode, args))
+
+# regular expressions
 EMPTY = ''
 ALL = set(itertools.imap(chr, itertools.ifilter(
-    lambda x:x not in (10, 13), xrange(256))))
+    lambda x:x not in (10, 13, 0), xrange(256))))
 CATEGORIES = {
+    # these are all byte-safe and thus a sequence of strings
     sre.CATEGORY_DIGIT: string.digits,
     sre.CATEGORY_SPACE: string.whitespace,
     sre.CATEGORY_WORD: string.ascii_letters,
@@ -22,130 +170,30 @@ CATEGORIES = {
     sre.CATEGORY_NOT_WORD: sorted(ALL - set(string.ascii_letters)),
 }
 
-# public interface
-def generate(pattern, max_repeat, flags=0):
-    had = [] # avoid duplicates
-    # otherwise eg. a?a? would yield '', 'a', 'a', 'aa'
-    g = gen(sre_parse.parse(pattern, flags=flags), max_repeat=max_repeat)
-    for mat in comb(g):
-        mat = ''.join(mat)
-        if mat not in had:
-            had.append(mat)
-            yield mat
-
-# itertools
-def unpack(g):
-    r = []
-    for mat in g:
-        if isinstance(mat, basestring):
-            r.append(mat)
-        else:
-            r.append(unpack(mat))
-    return r
-
-def joinprod(a ,b):
-    """Cartesian product"""
-    for item_a in a:
-        for item_b in b:
-            yield item_a + item_b
-
-# match structures
-def comb(g):
-    """Fold out a nested match structure."""
-    r = [[]]
-    for mat in g:
-        if isinstance(mat, basestring):
-            for p in r:
-                p.append(mat)
-        else: # mat = [A, B] means A OR B where A, B are AND structures
-            mat = map(comb, mat)
-            r = list(itertools.chain(*map(lambda b:list(joinprod(r, b)), mat)))
-    return r
-
-def gen(sre_pattern, max_repeat=sre.MAXREPEAT):
-    """Generate a nested match structure from an SRE parsed pattern.
-
-    Odd levels of nesting indicate concatenation,
-    even levels of nesting indicate alternation.
-
-    ====================== ==================
-        Match structure    Regular Expression
-    ====================== ==================
-    ``[A, [[B], [C]]]``    ``A(B|C)``
-    ``[A, [[B, C], [D]]]`` ``A(BC|D)``
-    ``[A, [[], [B]]]``     ``AB?``
-    ====================== ==================
-
-    """
-    _gen = functools.partial(gen, max_repeat=max_repeat)
-    for opcode, args in sre_pattern:
-        if opcode == sre.LITERAL:
-            yield chr(args)
-        elif opcode == sre.RANGE:
-            low, high = args
-            for char in xrange(low, high + 1):
-                yield chr(char)
-        elif opcode == sre.IN:
-            yield _gen(args)
-        elif opcode == sre.MAX_REPEAT: # A{l,h}
-            low, high, pat = args
-            high = min(max_repeat, high)
-            pat = unpack(_gen(pat))
-            for i in xrange(low): # A{l}
-                yield (pat,)
-            for i in xrange(high - low): # (A?){h-l}
-                yield ([EMPTY], pat)
-        elif opcode == sre.SUBPATTERN:
-            ref, pat = args
-            pat = _gen(pat)
-            for p in pat:
-                yield p
-        elif opcode == sre.BRANCH:
-            none, branches = args
-            yield map(_gen, branches)
-        elif opcode == sre.ANY:
-            yield map(chr, itertools.ifilter(lambda x:x not in (13, 10),
-                xrange(256)))
-        elif opcode == sre.CATEGORY:
-            cat = args
-            if cat in CATEGORIES:
-                for c in CATEGORIES[cat]:
-                    yield c
-            else:
-                raise NotImplementedError("%s in %s" %
-                    (cat, ", ".join(map(repr, sre_pattern))))
-        else:
-            raise NotImplementedError("%s in %s" %
-                (opcode, ", ".join(map(repr, sre_pattern))))
 
 if __name__ == '__main__':
     import optparse
     import sys
     optparse = optparse.OptionParser()
     optparse.add_option(
-        "-d", "--debug",
+        "-p", "--parse-only",
         action='store_true',
         help="debug expression",
     )
     optparse.add_option(
-        "-q", "--quiet",
+        "-d", "--debug",
         action='store_true',
-        help="do not combine matches",
+        help="show match structure",
     )
     optparse.add_option(
         "-c", "--count",
         action='store_true',
-        help="only output the number of combined matches",
+        help="print only a count of matches",
     )
     optparse.add_option(
         "-s", "--short",
         action='store_true',
-        help="do not allocate an extra line for each match",
-    )
-    optparse.add_option(
-        "-n", "--nest",
-        action='store_true',
-        help="show nested match",
+        help="spare newlines on output",
     )
     optparse.add_option(
         "-r", "--repeat",
@@ -153,23 +201,31 @@ if __name__ == '__main__':
         help="override max_repeat", metavar="N",
         default=3,
     )
+    optparse.add_option(
+        "-a", "--ascii",
+        action='store_true',
+        help="use only printable ascii",
+    )
     options, args = optparse.parse_args()
     args = ' '.join(args)
 
+    if options.ascii:
+        ALL = set(itertools.imap(chr, xrange(32, 127)))
+    
     if options.count:
-        for i, mat in enumerate(generate(args, max_repeat=options.repeat)):
+        for i, match in enumerate(generate(args, max_repeat=options.repeat)):
             pass
-        print i+1
-        sys.exit()
-    if options.debug:
-        print sre_parse.parse(args)
-    if options.nest:
-        print unpack(gen(sre_parse.parse(args), max_repeat=options.repeat))
-    if not options.quiet:
+        print i + 1
+    elif options.debug or options.parse_only:
+        if options.parse_only:
+            print sre_parse.parse(args)
+        if options.debug:
+            print unpack(_generate(sre_parse.parse(args), max_repeat=options.repeat))
+    else:
         g = generate(args, max_repeat=options.repeat)
         if options.short:
-            for mat in g:
-                print mat,
+            for match in g:
+                print match,
         else:
-            for mat in g:
-                print mat
+            for match in g:
+                print match
