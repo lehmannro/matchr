@@ -102,12 +102,16 @@ def _generate(sre_pattern, max_repeat):
     """
     g = functools.partial(_generate, max_repeat=max_repeat) # nested recursion
     c = functools.partial(_combine, max_repeat=max_repeat) # flat recursion
+    s = [] # stored backreferences
 
     for opcode, args in sre_pattern:
 
         if opcode == sre.SUBPATTERN:
             ref, pat = args
-            yield c(pat)
+            ret, grp = itertools.tee(c(pat))
+            print [list(x) for x in g(pat)]
+            s.append(list(grp))
+            yield ret
 
         elif opcode == sre.BRANCH:
             none, branches = args
@@ -149,6 +153,9 @@ def _generate(sre_pattern, max_repeat):
                     yield char
             else:
                 raise NotImplementedError("category %s" % cat)
+
+        elif opcode == sre.GROUPREF:
+            yield s[args-1]
 
         else:
             if isinstance(args, basestring):
